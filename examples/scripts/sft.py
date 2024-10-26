@@ -16,8 +16,8 @@
 nohup accelerate launch --config_file examples/accelerate_configs/deepspeed_zero3.yaml --num_processes 8 \
     --main_process_port 2501 --machine_rank 0 --main_process_ip 127.0.0.1 \
     examples/scripts/sft.py \
-    --model_name_or_path <model_name_or_path> \
-    --dataset_name <dataset_name> \ # {"messages": [{"content": "", "role": "user"}, {"content": "", "role": "assistant"}]}
+    --model_name_or_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct \
+    --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/agent_small/train.jsonl \
     --learning_rate 1.0e-5 \
     --num_train_epochs 1 \
     --packing \
@@ -30,8 +30,8 @@ nohup accelerate launch --config_file examples/accelerate_configs/deepspeed_zero
     --max_seq_length 512 \
     --weight_decay 0.01 \
     --warmup_ratio 0.01 \
-    --attn_implementation "flash_attention_2" \
-    --output_dir <output_dir>
+    --output_dir /mnt/bn/videonasi18n/heyc/paper_agent_demo/ckpts/sft \
+    --attn_implementation "flash_attention_2" & 
 
 # LoRA
 python examples/scripts/sft.py \
@@ -55,8 +55,6 @@ python examples/scripts/sft.py \
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
-import wandb
-import os
 
 from trl import (
     ModelConfig, # trl/trl/trainer/model_config.py
@@ -69,6 +67,8 @@ from trl import (
     get_quantization_config,
 )
 
+import wandb
+import os
 if int(os.environ.get('LOCAL_RANK', 0)) == 0:
     wandb.init(
         project="paper agent",

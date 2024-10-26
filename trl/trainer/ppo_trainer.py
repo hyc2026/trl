@@ -137,8 +137,16 @@ class PPOTrainer(Trainer):
         #########
         if args.total_episodes is None:  # allow the users to define episodes in terms of epochs.
             args.total_episodes = int(args.num_train_epochs * self.train_dataset_len)
+
+        # from transformers.integrations.deepspeed import HfTrainerDeepSpeedConfig
+        # print(self.args.deepspeed)
+        # hf_deepspeed_config = HfTrainerDeepSpeedConfig(self.args.deepspeed)
+        # hf_deepspeed_config.trainer_config_process(self.args)
+        # deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=hf_deepspeed_config)
+        # accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin, gradient_accumulation_steps=args.gradient_accumulation_steps)
         accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
         self.accelerator = accelerator
+        
         args.world_size = accelerator.num_processes
         args.local_batch_size = (
             args.per_device_train_batch_size * args.gradient_accumulation_steps * args.num_mini_batches

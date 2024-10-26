@@ -43,23 +43,34 @@ python examples/scripts/ppo/ppo_tldr.py \
     --stop_token eos \
     --response_length 53
 
-accelerate launch --config_file examples/accelerate_configs/deepspeed_zero2.yaml \
+WANDB_DISABLED=true accelerate launch \
+    --config_file examples/accelerate_configs/deepspeed_zero3.yaml \
+    --num_processes 8 \
+    --main_process_port 2501 \
+    --machine_rank 0 \
+    --main_process_ip 127.0.0.1 \
     examples/scripts/ppo/ppo_tldr.py \
-    --dataset_name trl-internal-testing/tldr-preference-sft-trl-style
+    --dataset_name trl-internal-testing/tldr-preference-sft-trl-style \
     --dataset_test_split validation \
-    --output_dir models/minimal/ppo_tldr \
+    --output_dir /mnt/bn/videonasi18n/heyc/paper_agent_demo/ckpts/ppo \
     --learning_rate 3e-6 \
-    --per_device_train_batch_size 16 \
+    --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 4 \
-    --total_episodes 1000000 \
-    --model_name_or_path EleutherAI/pythia-1b-deduped \
-    --sft_model_path cleanrl/EleutherAI_pythia-1b-deduped__sft__tldr \
-    --reward_model_path cleanrl/EleutherAI_pythia-1b-deduped__reward__tldr \
-    --local_rollout_forward_batch_size 16 \
+    --total_episodes 100 \
+    --model_name_or_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct \
+    --sft_model_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct \
+    --reward_model_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct-rw \
+    --local_rollout_forward_batch_size 4 \
     --missing_eos_penalty 1.0 \
     --stop_token eos
 """
 
+import wandb
+import os
+if int(os.environ.get('LOCAL_RANK', 0)) == 0:
+    wandb.init(
+        project="paper agent",
+    )
 
 if __name__ == "__main__":
     parser = HfArgumentParser((ScriptArguments, PPOConfig, ModelConfig))
