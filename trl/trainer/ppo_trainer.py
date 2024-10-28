@@ -138,12 +138,6 @@ class PPOTrainer(Trainer):
         if args.total_episodes is None:  # allow the users to define episodes in terms of epochs.
             args.total_episodes = int(args.num_train_epochs * self.train_dataset_len)
 
-        # from transformers.integrations.deepspeed import HfTrainerDeepSpeedConfig
-        # print(self.args.deepspeed)
-        # hf_deepspeed_config = HfTrainerDeepSpeedConfig(self.args.deepspeed)
-        # hf_deepspeed_config.trainer_config_process(self.args)
-        # deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=hf_deepspeed_config)
-        # accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin, gradient_accumulation_steps=args.gradient_accumulation_steps)
         accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps)
         self.accelerator = accelerator
         
@@ -343,9 +337,9 @@ class PPOTrainer(Trainer):
 
         for update in range(1, args.num_total_batches + 1):
             self.state.episode += 1 * args.batch_size
-            data = next(iter_dataloader)
+            data = next(iter_dataloader) # local_batch_size = per_device_train_batch_size * gradient_accumulation_steps * num_mini_batches = 16
             with torch.no_grad():
-                queries = data["input_ids"].to(device)
+                queries = data["input_ids"].to(device) # 把这里调成每个
                 context_length = queries.shape[1]
                 responses = []
                 postprocessed_responses = []
@@ -719,3 +713,21 @@ class PPOTrainer(Trainer):
         )
 
         model_card.save(os.path.join(self.args.output_dir, "README.md"))
+
+
+class FixZero3CheckpointPPOTrainer(PPOTrainer):
+
+    def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
+        backup_model = self.model
+        self.model = self.model.policy  # save only the policy
+
+        Trainer.save_model(self, output_dir, _internal_call)
+
+        self.model = backup_model
+
+    def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        if self.is_deepspeed_enabled:
+            state_dict = {name.removeprefix('policy.'): param for name, param in state_dict.items()
+                          if name.startswith('policy.')}
+
+        super()._save(output_dir, state_dict)

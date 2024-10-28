@@ -1,7 +1,7 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import json
 
-model_name = "/mnt/bn/videonasi18n/heyc/paper_agent_demo/ckpts/sft/checkpoint-2500"
+model_name = "/mnt/bn/videonasi18n/heyc/paper_agent_demo/ckpts/sft/checkpoint-500"
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
@@ -16,11 +16,12 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 #     {"role": "user", "content": prompt}
 # ]
 # messages = []
-with open("/mnt/bn/videonasi18n/heyc/paper_agent_demo/data/agent_small/train.jsonl") as f, open("/mnt/bn/videonasi18n/heyc/paper_agent_demo/data/agent_small/test.jsonl", "w") as f1:
+with open("/mnt/bn/videonasi18n/heyc/paper_agent_demo/data/agent_new/train.jsonl") as f, open("/mnt/bn/videonasi18n/heyc/paper_agent_demo/data/agent_new/test.jsonl", "w") as f1:
+    i = 0
     for line in f.readlines():
         messages = json.loads(line)
         text = tokenizer.apply_chat_template(
-            messages["messages"],
+            messages["messages"][:1],
             tokenize=False,
             add_generation_prompt=True
         )
@@ -37,4 +38,6 @@ with open("/mnt/bn/videonasi18n/heyc/paper_agent_demo/data/agent_small/train.jso
         response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
         messages["output"] = response
         f1.write(json.dumps(messages) + '\n')
-        # break
+        i += 1
+        if i > 99:
+            break

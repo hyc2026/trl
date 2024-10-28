@@ -157,12 +157,12 @@ class DataCollatorForCompletionOnlyLM(DataCollatorForLanguageModeling):
                         response_token_ids_start_idx = idx
 
                 if response_token_ids_start_idx is None:
-                    warnings.warn(
-                        f"Could not find response key `{self.response_template}` in the "
-                        f'following instance: {self.tokenizer.decode(batch["input_ids"][i])} '
-                        f"This instance will be ignored in loss calculation. "
-                        f"Note, if this happens often, consider increasing the `max_seq_length`."
-                    )
+                    # warnings.warn(
+                    #     f"Could not find response key `{self.response_template}` in the "
+                    #     f'following instance: {self.tokenizer.decode(batch["input_ids"][i])} '
+                    #     f"This instance will be ignored in loss calculation. "
+                    #     f"Note, if this happens often, consider increasing the `max_seq_length`."
+                    # )
                     batch["labels"][i, :] = self.ignore_index
                 else:
                     response_token_ids_end_idx = response_token_ids_start_idx + len(self.response_token_ids)

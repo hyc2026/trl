@@ -17,10 +17,9 @@ nohup accelerate launch --config_file examples/accelerate_configs/deepspeed_zero
     --main_process_port 2501 --machine_rank 0 --main_process_ip 127.0.0.1 \
     examples/scripts/sft.py \
     --model_name_or_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct \
-    --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/agent_small/train.jsonl \
+    --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/agent_new/train.jsonl \
     --learning_rate 1.0e-5 \
     --num_train_epochs 1 \
-    --packing \
     --bf16 True \
     --per_device_train_batch_size 16 \
     --gradient_accumulation_steps 1 \
@@ -65,14 +64,17 @@ from trl import (
     get_kbit_device_map,
     get_peft_config, # trl/trl/trainer/utils.py
     get_quantization_config,
+    DataCollatorForCompletionOnlyLM
 )
 
 import wandb
+wandb.login(key="214125030792bd6cfd84015505ed93487f714a59")
 import os
 if int(os.environ.get('LOCAL_RANK', 0)) == 0:
     wandb.init(
         project="paper agent",
     )
+
 
 if __name__ == "__main__":
     parser = TrlParser((ScriptArguments, SFTConfig, ModelConfig))
@@ -95,12 +97,13 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(
         model_config.model_name_or_path, trust_remote_code=model_config.trust_remote_code, use_fast=True
     )
-    tokenizer.pad_token = tokenizer.eos_token
 
     ################
     # Dataset
     ################
-    dataset = load_dataset("json", data_files=script_args.dataset_name)
+    dataset = load_dataset("json", data_files={"train": script_args.dataset_name})
+    response_template = "<|im_start|>assistant\n"
+    collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tokenizer) # 只计算assistant部分的loss
 
     ################
     # Training
@@ -112,6 +115,7 @@ if __name__ == "__main__":
         # eval_dataset=dataset[script_args.dataset_test_split],
         processing_class=tokenizer,
         peft_config=get_peft_config(model_config),
+        data_collator=collator,
         # gradient_checkpointing_kwargs={'use_reentrant':False},
     )
 
