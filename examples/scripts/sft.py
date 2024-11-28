@@ -16,20 +16,20 @@
 nohup accelerate launch --config_file examples/accelerate_configs/deepspeed_zero3.yaml --num_processes 8 \
     --main_process_port 2501 --machine_rank 0 --main_process_ip 127.0.0.1 \
     examples/scripts/sft.py \
-    --model_name_or_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct \
-    --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/agent_new/train.jsonl \
+    --model_name_or_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-3B-Instruct \
+    --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/new_sft/sft1.jsonl \
     --learning_rate 1.0e-5 \
     --num_train_epochs 1 \
     --bf16 True \
-    --per_device_train_batch_size 16 \
+    --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 1 \
     --gradient_checkpointing \
     --logging_steps 50 \
-    --save_steps 500 \
-    --max_seq_length 512 \
+    --save_steps 2000 \
+    --max_seq_length 1024 \
     --weight_decay 0.01 \
     --warmup_ratio 0.01 \
-    --output_dir /mnt/bn/videonasi18n/heyc/paper_agent_demo/ckpts/sft \
+    --output_dir /mnt/hdfs/foundation/agent/heyc/sft1/\
     --attn_implementation "flash_attention_2" & 
 
 # LoRA

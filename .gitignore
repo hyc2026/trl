@@ -147,3 +147,7 @@ wandb/
 
 # cli scripts that are symlinked from `examples/scripts`
 trl/commands/scripts/
+
+# internal tools
+idl/
+search_tools.py

@@ -86,6 +86,7 @@ _import_structure = {
         "RandomRankJudge",
         "RewardConfig",
         "RewardTrainer",
+        "ValueModelTrainer",
         "RLOOConfig",
         "RLOOTrainer",
         "SFTConfig",

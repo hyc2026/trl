@@ -15,7 +15,6 @@
 import shutil
 
 from accelerate import PartialState
-from datasets import load_dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoModelForSequenceClassification,
@@ -26,7 +25,9 @@ from transformers import (
 
 from trl import ModelConfig, PPOConfig, PPOTrainer, ScriptArguments
 from trl.trainer.utils import SIMPLE_CHAT_TEMPLATE
+from custom_agent.agent_dataset import AgentDataset
 from typing import Optional
+import torch.nn as nn
 
 
 """
@@ -37,43 +38,54 @@ python examples/scripts/ppo/ppo_tldr.py \
     --output_dir models/minimal/ppo \
     --per_device_train_batch_size 1 \
     --gradient_accumulation_steps 64 \
-    --total_episodes 30000 \
-    --model_name_or_path EleutherAI/pythia-1b-deduped \
+    --total_episodes 100 \
+    --model_name_or_path cleanrl/EleutherAI_pythia-1b-deduped__sft__tldr \
     --sft_model_path cleanrl/EleutherAI_pythia-1b-deduped__sft__tldr \
     --reward_model_path cleanrl/EleutherAI_pythia-1b-deduped__reward__tldr \
     --missing_eos_penalty 1.0 \
     --stop_token eos \
     --response_length 53
 
-WANDB_DISABLED=true accelerate launch \
+nohup accelerate launch \
     --config_file examples/accelerate_configs/deepspeed_zero3.yaml \
     --num_processes 8 \
-    --main_process_port 2501 \
+    --main_process_port 2502 \
     --machine_rank 0 \
     --main_process_ip 127.0.0.1 \
     examples/scripts/ppo/ppo_tldr.py \
-    --dataset_name trl-internal-testing/tldr-preference-sft-trl-style \
+    --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/train_ppo.jsonl \
     --dataset_test_split validation \
-    --output_dir /mnt/bn/videonasi18n/heyc/paper_agent_demo/ckpts/ppo \
+    --output_dir /mnt/hdfs/foundation/agent/heyc/ppo/t4 \
     --learning_rate 3e-6 \
-    --per_device_train_batch_size 4 \
+    --per_device_train_batch_size 2 \
     --gradient_accumulation_steps 4 \
-    --total_episodes 100 \
-    --model_name_or_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct \
-    --sft_model_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct \
-    --reward_model_path /mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct-rw \
+    --total_episodes 128000 \
+    --paper_db /mnt/hdfs/foundation/agent/heyc/cs_paper_2nd.zip \
+    --model_name_or_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
+    --sft_model_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
+    --reward_model_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
     --local_rollout_forward_batch_size 4 \
-    --missing_eos_penalty 1.0 \
+    --num_sample_generations 0 \
     --attn_implementation "flash_attention_2" \
-    --stop_token eos
+    --response_length 1024 \
+    --stop_token eos \
+    --alpha 1.0 \
+    --save_steps 50 \
+    --rounds 2 \
+    --use_vm True \
+    --vf_coef 0.2 \
+    --expand_select_score 0.5 \
+    --kl_coef 0.02 > nohup3.out 2>&1 &
 """
 
 import wandb
+
 import os
 if int(os.environ.get('LOCAL_RANK', 0)) == 0:
     wandb.init(
         project="paper agent",
     )
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 class FixZero3CheckpointPPOTrainer(PPOTrainer):
 
@@ -95,87 +107,44 @@ class FixZero3CheckpointPPOTrainer(PPOTrainer):
 if __name__ == "__main__":
     parser = HfArgumentParser((ScriptArguments, PPOConfig, ModelConfig))
     script_args, training_args, model_config = parser.parse_args_into_dataclasses()
-    # remove output_dir if exists
     shutil.rmtree(training_args.output_dir, ignore_errors=True)
 
-    ################
-    # Model & Tokenizer
-    ################
+    # tokenizer and dataset
     tokenizer = AutoTokenizer.from_pretrained(
         model_config.model_name_or_path,
         padding_side="left",
-        trust_remote_code=model_config.trust_remote_code,
+        trust_remote_code=model_config.trust_remote_code
     )
-    tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-    if tokenizer.chat_template is None:
-        tokenizer.chat_template = SIMPLE_CHAT_TEMPLATE
+    train_dataset = AgentDataset(script_args.dataset_name, tokenizer)
+    assert train_dataset[0]["input_ids"][-1] != tokenizer.eos_token_id, "The last token should not be an EOS token"
+
+    # models
     value_model = AutoModelForSequenceClassification.from_pretrained(
         training_args.reward_model_path, trust_remote_code=model_config.trust_remote_code, num_labels=1
     )
-    reward_model = AutoModelForSequenceClassification.from_pretrained(
-        training_args.reward_model_path, trust_remote_code=model_config.trust_remote_code, num_labels=1
-    )
+    for m in value_model.score.modules():
+        if isinstance(m, nn.Linear):
+            nn.init.normal_(m.weight, mean=0, std=0.01)
     ref_policy = AutoModelForCausalLM.from_pretrained(
         training_args.sft_model_path, trust_remote_code=model_config.trust_remote_code
     )
     policy = AutoModelForCausalLM.from_pretrained(
         training_args.sft_model_path, trust_remote_code=model_config.trust_remote_code
     )
-    ################
-    # Dataset
-    ################
-    dataset = load_dataset(script_args.dataset_name)
-    train_dataset = dataset[script_args.dataset_train_split]
-    eval_dataset = dataset[script_args.dataset_test_split]
 
-    def prepare_dataset(dataset, tokenizer):
-        """pre-tokenize the dataset before training; only collate during training"""
-
-        def tokenize(element):
-            input_ids = tokenizer.apply_chat_template(
-                element["messages"][:1],
-                padding=False,
-                add_generation_prompt=True,
-            )
-            return {"input_ids": input_ids, "lengths": len(input_ids)}
-
-        return dataset.map(
-            tokenize,
-            remove_columns=dataset.column_names,
-            num_proc=training_args.dataset_num_proc,
-        )
-
-    # Compute that only on the main process for faster data processing.
-    # see: https://github.com/huggingface/trl/pull/1255
-    with PartialState().local_main_process_first():
-        train_dataset = prepare_dataset(train_dataset, tokenizer)
-        eval_dataset = prepare_dataset(eval_dataset, tokenizer)
-        # filtering
-        train_dataset = train_dataset.filter(lambda x: x["lengths"] <= 512, num_proc=training_args.dataset_num_proc)
-        eval_dataset = eval_dataset.filter(lambda x: x["lengths"] <= 512, num_proc=training_args.dataset_num_proc)
-
-    assert train_dataset[0]["input_ids"][-1] != tokenizer.eos_token_id, "The last token should not be an EOS token"
-    ################
-    # Training
-    ################
     trainer = FixZero3CheckpointPPOTrainer(
         config=training_args,
         processing_class=tokenizer,
         policy=policy,
         ref_policy=ref_policy,
-        reward_model=reward_model,
         value_model=value_model,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        paper_db=training_args.paper_db,
     )
     trainer.train()
 
     # Save and push to hub
     trainer.save_model(training_args.output_dir)
-    if training_args.push_to_hub:
-        trainer.push_to_hub(dataset_name=script_args.dataset_name)
-
-    trainer.generate_completions()
 """
 ScriptArguments(
     dataset_name='trl-internal-testing/tldr-preference-sft-trl-style',
