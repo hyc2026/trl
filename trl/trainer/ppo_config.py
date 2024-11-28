@@ -64,7 +64,9 @@ class PPOConfig(OnPolicyConfig):
     rounds: int = 2 # rollout rounds
     use_vm: bool = True # use value model to estimate the returns of the new papers
     paper_db: str = ""
+    id2paper: str = ""
     search_select_score: float = 0.5
     expand_select_score: float = 0.5
     search_cost: float = 0.2
     expand_cost: float = 0.2
+    max_papers: int = 5

@@ -29,7 +29,7 @@ nohup accelerate launch --config_file examples/accelerate_configs/deepspeed_zero
     --max_seq_length 1024 \
     --weight_decay 0.01 \
     --warmup_ratio 0.01 \
-    --output_dir /mnt/hdfs/foundation/agent/heyc/sft1/\
+    --output_dir /mnt/hdfs/foundation/agent/heyc/sft1/ \
     --attn_implementation "flash_attention_2" & 
 
 # LoRA
@@ -68,7 +68,7 @@ from trl import (
 )
 
 import wandb
-wandb.login(key="214125030792bd6cfd84015505ed93487f714a59")
+
 import os
 if int(os.environ.get('LOCAL_RANK', 0)) == 0:
     wandb.init(

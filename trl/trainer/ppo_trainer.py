@@ -101,6 +101,7 @@ class PPOTrainer(Trainer):
         ref_policy: nn.Module,
         train_dataset: Dataset,
         paper_db: str,
+        id2paper: str,
         reward_model: Optional[nn.Module] = None,
         value_model: Optional[nn.Module] = None,
         data_collator: Optional[DataCollatorWithPadding] = None,
@@ -132,6 +133,7 @@ class PPOTrainer(Trainer):
         self.eval_dataset = eval_dataset
         self.optimizer, self.lr_scheduler = optimizers
         self.paper_db = zipfile.ZipFile(paper_db, 'r')
+        self.id2paper = json.load(open(id2paper))
 
         #########
         # calculate various batch sizes
@@ -284,6 +286,7 @@ class PPOTrainer(Trainer):
         optimizer = self.optimizer
         model = self.model
         ref_policy = self.ref_policy
+        reward_model = self.reward_model
         processing_class = self.processing_class
         dataloader = self.dataloader
         device = accelerator.device
@@ -385,7 +388,7 @@ class PPOTrainer(Trainer):
                         logitss.append(logits)
                         response_lengths.append(logits.shape[1])
 
-                        queries, f_papers, score = rollout(query_response, self.processing_class, context_length, unwrapped_value_model, args, self.paper_db, f_papers, trajectory[0], trajectory[1])
+                        queries, f_papers, score = rollout(query_response, self.processing_class, context_length, unwrapped_value_model, reward_model, args, self.paper_db, self.id2paper, f_papers, trajectory[0], trajectory[1])
                         scores.append(score)
                         
                         if queries is None:

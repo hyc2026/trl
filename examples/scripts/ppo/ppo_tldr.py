@@ -46,7 +46,7 @@ python examples/scripts/ppo/ppo_tldr.py \
     --stop_token eos \
     --response_length 53
 
-nohup accelerate launch \
+WANDB_DISABLED=False nohup accelerate launch \
     --config_file examples/accelerate_configs/deepspeed_zero3.yaml \
     --num_processes 8 \
     --main_process_port 2502 \
@@ -55,15 +55,16 @@ nohup accelerate launch \
     examples/scripts/ppo/ppo_tldr.py \
     --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/train_ppo.jsonl \
     --dataset_test_split validation \
-    --output_dir /mnt/hdfs/foundation/agent/heyc/ppo/t4 \
+    --output_dir /mnt/hdfs/foundation/agent/heyc/ppo/t100 \
     --learning_rate 3e-6 \
     --per_device_train_batch_size 2 \
     --gradient_accumulation_steps 4 \
     --total_episodes 128000 \
     --paper_db /mnt/hdfs/foundation/agent/heyc/cs_paper_2nd.zip \
+    --id2paper /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/paper_base/id2paper.json \
     --model_name_or_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
     --sft_model_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
-    --reward_model_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
+    --reward_model_path /mnt/bn/videonasi18n/heyc/paper_agent_demo/ckpts/sft \
     --local_rollout_forward_batch_size 4 \
     --num_sample_generations 0 \
     --attn_implementation "flash_attention_2" \
@@ -71,20 +72,20 @@ nohup accelerate launch \
     --stop_token eos \
     --alpha 1.0 \
     --save_steps 50 \
-    --rounds 2 \
+    --rounds 1 \
     --use_vm True \
     --vf_coef 0.2 \
     --expand_select_score 0.5 \
-    --kl_coef 0.02 > nohup3.out 2>&1 &
+    --kl_coef 0.02 > nohup2.out1 2>&1 &
 """
 
 import wandb
 
 import os
-if int(os.environ.get('LOCAL_RANK', 0)) == 0:
-    wandb.init(
-        project="paper agent",
-    )
+# if int(os.environ.get('LOCAL_RANK', 0)) == 0:
+#     wandb.init(
+#         project="paper agent",
+#     )
 # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 class FixZero3CheckpointPPOTrainer(PPOTrainer):
@@ -120,7 +121,7 @@ if __name__ == "__main__":
 
     # models
     value_model = AutoModelForSequenceClassification.from_pretrained(
-        training_args.reward_model_path, trust_remote_code=model_config.trust_remote_code, num_labels=1
+        training_args.sft_model_path, trust_remote_code=model_config.trust_remote_code, num_labels=1
     )
     for m in value_model.score.modules():
         if isinstance(m, nn.Linear):
@@ -131,6 +132,9 @@ if __name__ == "__main__":
     policy = AutoModelForCausalLM.from_pretrained(
         training_args.sft_model_path, trust_remote_code=model_config.trust_remote_code
     )
+    reward_model = AutoModelForCausalLM.from_pretrained(
+        training_args.reward_model_path, trust_remote_code=model_config.trust_remote_code
+    )
 
     trainer = FixZero3CheckpointPPOTrainer(
         config=training_args,
@@ -138,8 +142,10 @@ if __name__ == "__main__":
         policy=policy,
         ref_policy=ref_policy,
         value_model=value_model,
+        reward_model=reward_model,
         train_dataset=train_dataset,
         paper_db=training_args.paper_db,
+        id2paper=training_args.id2paper
     )
     trainer.train()
 
