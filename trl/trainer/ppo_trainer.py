@@ -31,10 +31,10 @@ from accelerate import Accelerator
 from accelerate.utils import broadcast, gather_object
 from deepspeed.accelerator import get_accelerator
 from datasets import Dataset
+
 from torch.utils.data import DataLoader
 from transformers import (
     BaseImageProcessor,
-    DataCollatorWithPadding,
     FeatureExtractionMixin,
     GenerationConfig,
     PreTrainedTokenizerBase,
@@ -64,7 +64,13 @@ from ..trainer.utils import (
 )
 from .ppo_config import PPOConfig
 from .utils import generate_model_card
+from custom_agent.agent_dataset import AgentDataCollatorWithPadding
 from custom_agent.utils import rollout
+from custom_agent.search_tools import log
+# from custom_agent.utils_7b import rollout
+
+# from laplace import Laplace
+# ref_policy_lap = Laplace("lab.agent.ref_policy?idc=maliva&cluster=default", timeout=500)
 
 if is_wandb_available():
     import wandb
@@ -103,7 +109,7 @@ class PPOTrainer(Trainer):
         paper_db: str,
         reward_model: Optional[nn.Module] = None,
         value_model: Optional[nn.Module] = None,
-        data_collator: Optional[DataCollatorWithPadding] = None,
+        data_collator: Optional[AgentDataCollatorWithPadding] = None,
         eval_dataset: Optional[Union[Dataset, Dict[str, Dataset]]] = None,
         # less commonly used
         optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
@@ -176,6 +182,7 @@ class PPOTrainer(Trainer):
         # setup model, optimizer, and others
         #########
         for module in [policy, ref_policy, value_model]:
+        # for module in [policy, value_model]:
             disable_dropout_in_model(module)
         if reward_model is not None:
             disable_dropout_in_model(reward_model)
@@ -226,7 +233,7 @@ class PPOTrainer(Trainer):
             self.train_dataset,
             batch_size=self.local_dataloader_batch_size,
             shuffle=True,
-            collate_fn=DataCollatorWithPadding(self.processing_class),
+            collate_fn=AgentDataCollatorWithPadding(self.processing_class),
             drop_last=True,  # needed; otherwise the last batch will be of ragged shape
         )
         # sync random states for DataLoader(shuffle=True) before `accelerator.prepare`
@@ -239,7 +246,7 @@ class PPOTrainer(Trainer):
             self.eval_dataloader = DataLoader(
                 self.eval_dataset,
                 batch_size=args.per_device_eval_batch_size,
-                collate_fn=DataCollatorWithPadding(self.processing_class),
+                collate_fn=AgentDataCollatorWithPadding(self.processing_class),
                 drop_last=True,
             )  # no need to shuffle eval dataset
             self.eval_dataloader = accelerator.prepare(self.eval_dataloader)
@@ -283,7 +290,7 @@ class PPOTrainer(Trainer):
         accelerator = self.accelerator
         optimizer = self.optimizer
         model = self.model
-        ref_policy = self.ref_policy
+        ref_policy = self.ref_policy.cpu()
         processing_class = self.processing_class
         dataloader = self.dataloader
         device = accelerator.device
@@ -359,6 +366,9 @@ class PPOTrainer(Trainer):
                 unwrapped_value_model = self.accelerator.unwrap_model(model).value_model
                 query_responses, logitss, response_lengths = [], [], []
 
+                answers = data["answers"]
+                answers = self.processing_class.batch_decode(answers, skip_special_tokens=True)
+                answers = [json.loads(x) for x in answers]
                 queries = data["input_ids"]
                 queries_list = [queries]
                 context_length = queries.shape[1]
@@ -380,12 +390,23 @@ class PPOTrainer(Trainer):
                             processing_class.pad_token_id,
                             generation_config,
                         ) # [b, query_response_len], [b, response_len, vocab_size]
-                    
+
                         query_responses.append(query_response)
                         logitss.append(logits)
                         response_lengths.append(logits.shape[1])
 
-                        queries, f_papers, score = rollout(query_response, self.processing_class, context_length, unwrapped_value_model, args, self.paper_db, f_papers, trajectory[0], trajectory[1])
+                        queries, f_papers, score, answers = rollout(
+                            query_response, 
+                            self.processing_class, 
+                            context_length, 
+                            unwrapped_value_model, 
+                            args, 
+                            self.paper_db, 
+                            answers, 
+                            f_papers, 
+                            trajectory[0], 
+                            trajectory[1]
+                        )
                         scores.append(score)
                         
                         if queries is None:
@@ -400,6 +421,7 @@ class PPOTrainer(Trainer):
                             context_length = queries.shape[1]
                             context_lengths.append(context_length)
                         torch.distributed.barrier()
+
                 
                 # pad each batch to the same length
                 context_length, max_response_len = max(context_lengths), max(response_lengths)
@@ -432,14 +454,27 @@ class PPOTrainer(Trainer):
                     logprob = torch.gather(all_logprob, 2, response.unsqueeze(-1)).squeeze(-1) # logprob corresponding to the token in the response [per_device_train_batch_size, response_len]
                     del logits, all_logprob
                     torch.cuda.empty_cache()
+                    
+                    # log("query_response", query_response)
+                    # log("context_length", context_length)
+                    # inputs = dict(query_responses=[x.cpu().numpy().tobytes() for x in query_response], context_length=[context_length] * query_response.shape[0])
+                    # ref_logprob = ref_policy_lap.matx_inference("ref_policy", inputs)
+                    # ref_logprob = [torch.from_numpy(np.frombuffer(x, dtype=np.float32)).bfloat16() for x in ref_logprob.output_bytes_lists['output']]
+                    # ref_logprob = torch.stack(ref_logprob).to(device)
+                    # del inputs
+                    # torch.cuda.empty_cache()
+                    # log("laplace_ref_logprob", ref_logprob)
 
+                    ref_policy = ref_policy.to(self.accelerator.device)
                     ref_output = forward(ref_policy, query_response, processing_class.pad_token_id)
                     ref_logits = ref_output.logits[:, context_length - 1 : -1]
                     ref_logits /= args.temperature + 1e-7
                     ref_all_logprob = F.log_softmax(ref_logits, dim=-1)
                     ref_logprob = torch.gather(ref_all_logprob, 2, response.unsqueeze(-1)).squeeze(-1) # [batch_size, response_len]
+                    ref_policy = ref_policy.cpu()
                     del ref_output, ref_logits, ref_all_logprob
                     torch.cuda.empty_cache()
+                    # log("local_ref_logprob", ref_logprob)
 
                     # Response Processing 1. truncate response after the first occurrence of `stop_token_id`
                     postprocessed_response = response
@@ -541,7 +576,7 @@ class PPOTrainer(Trainer):
                             mb_return = returns[micro_batch_inds]
                             mb_values = values[micro_batch_inds]
 
-                            print(mb_query_responses.shape)
+                            # print(mb_query_responses.shape)
                             output, vpred_temp = forward(model, mb_query_responses, processing_class.pad_token_id)
                             logits = output.logits[:, context_length - 1 : -1]
                             logits /= args.temperature + 1e-7
@@ -570,10 +605,11 @@ class PPOTrainer(Trainer):
                             pg_losses2 = -mb_advantage * torch.clamp(ratio, 1.0 - args.cliprange, 1.0 + args.cliprange)
                             pg_loss_max = torch.max(pg_losses, pg_losses2)
                             pg_loss = masked_mean(pg_loss_max, ~padding_mask[micro_batch_inds])
-                            if update < 100:
-                                loss = 0 * pg_loss + vf_loss
-                            else:
-                                loss = pg_loss + args.vf_coef * vf_loss
+                            # pg_coef = 0 if update < 100 else 1
+                            pg_coef = 0 if update < args.warm_up_step else 1
+                            # vf_coef = args.vf_coef * 10 if update < args.warm_up_step else args.vf_coef
+                            # pg_coef = 1
+                            loss = pg_coef * pg_loss + args.vf_coef * vf_loss
                             accelerator.backward(loss)
                             optimizer.step()
                             optimizer.zero_grad()
@@ -597,15 +633,12 @@ class PPOTrainer(Trainer):
                                 ratio_stats[ppo_epoch_idx, minibatch_idx, gradient_accumulation_idx] = ratio.mean()
                         gradient_accumulation_idx += 1
                     minibatch_idx += 1
-                    # del everything and empty cache
-                    # fmt: off
                     del (
                         output, vpred_temp, logits, new_all_logprobs, new_logprobs, vpred, vpredclipped,
                         vf_losses1, vf_losses2, vf_loss, vf_clipfrac, logprobs_diff, ratio, pg_losses, pg_losses2, pg_loss_max,
                         pg_loss, loss, pg_clipfrac, prob_dist, entropy, approxkl, mb_return,
                         mb_advantage, mb_values, mb_responses, mb_query_responses, mb_logprobs,
                     )
-                    # fmt: on
                     torch.cuda.empty_cache()
             with torch.no_grad():
                 mean_kl = kl.sum(1).mean()
@@ -635,7 +668,7 @@ class PPOTrainer(Trainer):
                 metrics["val/num_eos_tokens"] = (responses == processing_class.eos_token_id).sum().item()
                 metrics["lr"] = self.lr_scheduler.get_last_lr()[0]
                 metrics["episode"] = self.state.episode
-                self.state.epoch = self.state.episode / self.train_dataset_len  # used by self.log
+                self.state.epoch = self.state.episode / self.train_dataset_len # used by self.log
                 self.state.global_step += 1
                 self.log(metrics)
 

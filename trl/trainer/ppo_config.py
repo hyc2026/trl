@@ -63,8 +63,13 @@ class PPOConfig(OnPolicyConfig):
     alpha: float = 0.1 # discount factor for the estimated returns of the newly searched paper
     rounds: int = 2 # rollout rounds
     use_vm: bool = True # use value model to estimate the returns of the new papers
+    use_selector: bool = True
     paper_db: str = ""
     search_select_score: float = 0.5
     expand_select_score: float = 0.5
     search_cost: float = 0.2
     expand_cost: float = 0.2
+    max_papers: int = 5
+    value_step: int = 5 # To avoid wasting computing resources, it is best for value_step to be a factor of max_papers
+    value_max_length: int = 992 # Set the maximum length of the value model input to avoid OOM.
+    warm_up_step: int = 50

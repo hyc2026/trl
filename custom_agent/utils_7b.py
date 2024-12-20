@@ -6,13 +6,10 @@ import json
 import torch
 import zipfile
 import threading
-import concurrent.futures
-from deepspeed.accelerator      import get_accelerator
+from deepspeed.accelerator import get_accelerator
 from custom_agent.agent_dataset import prompts, AgentDataset
-from custom_agent.search_tools  import search_paper_by_google, laplace, log
+from custom_agent.search_tools import search_paper_by_google, laplace, log
 
-# hyperparameters
-MAX_PAPERS = 5
 select_prompt = "You are an elite researcher in the field of AI, conducting research on {user_query}. Evaluate whether the following paper fully satisfies the detailed requirements of the user query and provide your reasoning. Ensure that your decision and reasoning are consistent.\n\nSearched Paper:\nTitle: {title}\nAbstract: {abstract}\n\nUser Query: {user_query}\n\nOutput format: Decision: True/False\nReason:... \nDecision:"
 
 # regular expressions
@@ -61,59 +58,6 @@ def gen_value_model_prompt(title, user_query, paper_db):
     ]
     return value_model_prompt, paper
 
-def call_vm(value_model_prompts, tokenizer, device, value_model):
-    if len(value_model_prompts) > 0:
-        input_ids = tokenizer.apply_chat_template(
-            value_model_prompts,
-            tokenize=True,
-            padding=True,
-            truncation=True,
-            max_length=992,
-            add_generation_prompt=False,
-        ) # [..., 151644, 77091, 198, 58, 151645]
-        input_ids = torch.tensor(input_ids, device=device)
-        attention_mask = input_ids != tokenizer.pad_token_id
-        position_ids = attention_mask.cumsum(1) - attention_mask.long()
-        input_ids = torch.masked_fill(input_ids, ~attention_mask, 0)
-        output = value_model.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            return_dict=True,
-            output_hidden_states=True,
-            use_cache=False,
-        )
-        reward_logits = value_model.score(output.hidden_states[-1])
-        reward_logits = reward_logits.squeeze(-1)[:, -2].squeeze(-1)
-        score = reward_logits.sum().item()
-    else:
-        input_ids = tokenizer.apply_chat_template(
-            [[{"role": "user", "content": "hello"}]],
-            tokenize=True,
-            padding=True,
-            padding_side='left',
-            add_generation_prompt=True,
-        )
-        input_ids = torch.tensor(input_ids, device=device)
-        attention_mask = input_ids != tokenizer.pad_token_id
-        position_ids = attention_mask.cumsum(1) - attention_mask.long()
-        input_ids = torch.masked_fill(input_ids, ~attention_mask, 0)
-        output = value_model.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            return_dict=True,
-            output_hidden_states=True,
-            use_cache=False,
-        )
-        reward_logits = value_model.score(output.hidden_states[-1])
-        score = 0
-    del input_ids, attention_mask, position_ids, output, reward_logits
-    gc.collect()
-    torch.cuda.empty_cache()
-    get_accelerator().empty_cache()
-    return score
-
 def response_handler(
         num, 
         response, 
@@ -127,27 +71,21 @@ def response_handler(
         args, 
         paper_db,
         typ="search", 
-        f_paper=None,
-        answer=[]
+        f_paper=None
     ): 
-    # log("answer", answer)
-    scores, has_stop = [], False
+    scores = []
     if typ == "search":
         user_query_template = search_user_query_template
         query_keys_template = search_template
         cost = args.search_cost
         select_score = args.search_select_score
         max_action = 5
-        if "[StopSearch]" in response:
-            has_stop = True
     else:
         user_query_template = expand_user_query_template
         query_keys_template = expand_template
         cost = args.expand_cost
         select_score = args.expand_select_score
         max_action = 5
-        if "[StopExpand]" in response:
-            has_stop = True
     
     # parse the model output
     user_query = re.findall(user_query_template, response, flags=re.DOTALL)
@@ -169,48 +107,30 @@ def response_handler(
                     for _ in range(10):
                         try:
                             with lock:
-                                searched_papers = search_paper_by_google(query_keys[idx], MAX_PAPERS)
+                                searched_papers = search_paper_by_google(query_keys[idx], args.max_papers)
                             break
                         except:
                             time.sleep(1)
                             pass
                 else:
                     searched_papers = get_expand_papers(query_keys[idx], f_paper, paper_db)
+                    # if "introduction" in "".join(query_keys[idx].split()).lower() or "relatedwork" in "".join(query_keys[idx].split()).lower():
+                    #     score += cost
 
             if len(searched_papers) > 0:
-                results = []
+                # get selector score
                 for searched_paper in searched_papers:
-                    if keep_letters(searched_paper["title"]) in answer:
-                        results.append({"prob": 1})
-                    else:
-                        results.append({"prob": 0})
-
-                if args.use_selector:
-                    # get selector score
-                    for searched_paper in searched_papers:
-                        select_prompts.append(select_prompt.format(title=searched_paper["title"], abstract=searched_paper["abstract"], user_query=user_query))
-                    for _ in range(3): # The selector service may be unstable, maximum of 3 repeated calls
-                        try:
-                            """
-                            Deploy an additional selector to get the relevant possibilities of paper and user_query.
-                            Implement a function `call_selector` that takes the prompts of the selector as input and returns the probability scores.
-                            def call_selector(select_prompts: List[str]) -> List[Dict(str, any)]:
-                                return [{"prob": 0} for i in range(len(select_prompts))]
-                            """
-                            selector_results = laplace.matx_inference("select_agent", {"text": select_prompts})
-                            selector_results = [json.loads(x.decode()) for x in selector_results.output_bytes_lists['output']]
-                            break
-                        except Exception as e:
-                            print(e)
-                            selector_results = [{"prob": 0} for i in range(len(select_prompts))]
-                    for i in range(len(results)):
-                        if i < len(selector_results) and selector_results[i]["prob"] > results[i]["prob"]:
-                            results[i]["prob"] = selector_results[i]["prob"]
-                    results = selector_results
-
+                    select_prompts.append(select_prompt.format(title=searched_paper["title"], abstract=searched_paper["abstract"], user_query=user_query))
+                for _ in range(3):
+                    try:
+                        results = laplace.matx_inference("select_agent", {"text": select_prompts})
+                        results = [json.loads(x.decode()) for x in results.output_bytes_lists['output']]
+                        break
+                    except:
+                        results = [{"prob": 0} for i in range(len(select_prompts))]
+                
                 # gen value model prompt
                 all_prompts = []
-                # log(searched_papers, results)
                 for searched_paper, result in zip(searched_papers, results):
                     if keep_letters(searched_paper["title"]) not in searched_paper_set:
                         searched_paper_set.add(keep_letters(searched_paper["title"]))
@@ -223,50 +143,84 @@ def response_handler(
                         continue
                     all_prompts.append([result["prob"], paper, value_model_prompt])
                 all_prompts.sort(key=lambda x: x[0], reverse=True)
-                all_prompts = all_prompts[:MAX_PAPERS + 2]
-                all_prompts.sort(key=lambda x: len(x[2][0]["content"]))
-                for i in all_prompts[:MAX_PAPERS]:
+                for i in all_prompts[:args.max_papers]:
                     value_model_prompts.append(i[2])
                     with lock:
-                        all_papers.append([i[0], i[1], i[2][:1], answer])
-                
-            # get value model score
+                        all_papers.append([i[0], i[1], i[2][:1]])
+            
+            valid_value_num = len(value_model_prompts)
+            for _ in range(len(value_model_prompts), args.max_papers):
+                value_model_prompts.append([{"role": "user", "content": "hello"}])
+            
             if args.use_vm:
+                reward_scores = None
                 with lock:
-                    with concurrent.futures.ThreadPoolExecutor() as executor: # Using external threads can minimize the negative impact of OOM
-                        try:
-                            future = executor.submit(call_vm, value_model_prompts, tokenizer, query_responses.device, value_model)
-                            result = future.result()
-                            score += args.alpha * result
-                        except Exception as e:
-                            print(f"call value function error: {e}")
+                    for value_idx in range(0, args.max_papers, args.value_step):
+                        input_ids = tokenizer.apply_chat_template(
+                            value_model_prompts[value_idx: value_idx + args.value_step],
+                            tokenize=True,
+                            padding=True,
+                            truncation=True,
+                            max_length=992,
+                            add_generation_prompt=False,
+                        ) # [..., 151644, 77091, 198, 58, 151645]
+                        add_score = True
+                        input_ids = torch.tensor(input_ids, device=query_responses.device)
+                        if input_ids.shape[1] > args.value_max_length:
+                            input_ids = input_ids[:, :args.value_max_length]
+                            start_idx = reward_scores.shape[0] if reward_scores is not None else 0
+                            fail_num = 0
+                            for j in range(args.value_step):
+                                if start_idx + j < valid_value_num:
+                                    fail_num += 1
+                            valid_value_num -= fail_num
+                            add_score = False
+                        attention_mask = input_ids != tokenizer.pad_token_id
+                        position_ids = attention_mask.cumsum(1) - attention_mask.long()
+                        input_ids = torch.masked_fill(input_ids, ~attention_mask, 0)
+                        output = value_model.model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            position_ids=position_ids,
+                            return_dict=True,
+                            output_hidden_states=True,
+                            use_cache=False,
+                        )
+                        reward_logits = value_model.score(output.hidden_states[-1])
+                        reward_logits = reward_logits.squeeze(-1)[:, -2]
+                        if add_score:
+                            if reward_scores is None:
+                                reward_scores = reward_logits
+                            else:
+                                reward_scores = torch.cat((reward_scores, reward_logits))
+                        del input_ids, attention_mask, position_ids, output, reward_logits
+                        gc.collect()
+                        torch.cuda.empty_cache()
+                        get_accelerator().empty_cache()
+
+                    if reward_scores is not None and valid_value_num > 0:
+                        score += args.alpha * reward_scores[:valid_value_num].sum().item()
 
         if idx < len(query_keys):
             scores.append(max(min(score, 5), -args.search_cost))
     
     # score should be apply to each `[`(58) token
     score_tensor = torch.zeros(query_responses.shape[1] - context_length)
-    # if len(scores) > 0:
-    score_idx = len(scores) - 1
-    for i in range(-1, -score_tensor.shape[0] - 1, -1):
-        if has_stop and query_responses[num][i] == 60:
-            has_stop = False
-            score_tensor[i] = cost # reward for stop token
-        if query_responses[num][i] == 58:
-            if score_idx < 0:
-                break
-            score_tensor[i] = scores[score_idx]
-            score_idx -= 1
-            if score_idx < 0:
-                break
+    if len(scores) > 0:
+        score_idx = len(scores) - 1
+        for i in range(-1, -score_tensor.shape[0] - 1, -1):
+            if query_responses[num][i] == 58:
+                score_tensor[i] = scores[score_idx]
+                score_idx -= 1
+                if score_idx < 0:
+                    break
     with lock:
         all_scores[num] = score_tensor
 
-def rollout(query_responses, tokenizer, context_length, value_model, args, paper_db, answers, papers=None, typ="search", return_new_query=True):
+def rollout(query_responses, tokenizer, context_length, value_model, args, paper_db, papers=None, typ="search", return_new_query=True):
     
     # decode to strs
     query_response_strs = tokenizer.batch_decode(query_responses, skip_special_tokens=True)
-    # log("query_response_strs", query_response_strs)
     all_papers, all_scores = [], {}
     lock = threading.Lock()
 
@@ -291,8 +245,7 @@ def rollout(query_responses, tokenizer, context_length, value_model, args, paper
                 args, 
                 paper_db,
                 typ, 
-                f_paper,
-                [keep_letters(answer) for answer in answers[num]]
+                f_paper
             )
         )
         threads.append(thread)
@@ -301,24 +254,21 @@ def rollout(query_responses, tokenizer, context_length, value_model, args, paper
         thread.join()
     
     torch.distributed.barrier()
-    # all_scores = [all_scores[i] for i in range(len(all_scores))]
-    # all_scores = torch.stack(all_scores).to(query_responses.device)
     all_scores_list = []
     for i in range(query_responses.shape[0]):
         if i in all_scores:
             all_scores_list.append(all_scores[i])
         else:
-            print("Error, index not in value")
             all_scores_list.append(torch.zeros(query_responses.shape[1] - context_length))
     all_scores = torch.stack(all_scores_list).to(query_responses.device)
-    # log("all_scores", all_scores)
 
     if return_new_query:
         # hard-coded to return 6 items
         all_papers.sort(key=lambda x: x[0], reverse=True)
         next_data = []
+        # all_papers_num = len(all_papers)
         if len(all_papers) == 0:
-            return None, None, all_scores, []
+            return None, None, all_scores
         while len(all_papers) < 6:
             all_papers += all_papers
         next_data = all_papers[:6]
@@ -337,7 +287,7 @@ def rollout(query_responses, tokenizer, context_length, value_model, args, paper
             )
             input_ids = torch.tensor(input_ids, device=query_responses.device)
 
-        return input_ids, [i[1] for i in next_data], all_scores, [i[3] for i in next_data]
+        return input_ids, [i[1] for i in next_data], all_scores
     else:
-        return None, None, all_scores, []
+        return None, None, all_scores
     

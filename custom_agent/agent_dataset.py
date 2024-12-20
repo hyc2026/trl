@@ -1,7 +1,7 @@
 import json
-from torch.utils.data import Dataset
-from transformers import AutoTokenizer
 import torch
+from torch.utils.data import Dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
 
 prompts = {
     "generate_query": "Please generate some mutually exclusive queries in a list to search the relevant papers according to the User Query. Searching for survey papers would be better.\nUser Query: {user_query}",
@@ -10,11 +10,11 @@ prompts = {
 
 class AgentDataset(Dataset):
     def __init__(self, annotations_file, tokenizer):
-        self.messages = []
-        self.ids = []
-        self.answers = [] # 后续看需不需要加上
+        self.ids       = []
+        self.messages  = []
         self.input_ids = []
-        self.lengths = []
+        self.answers   = []
+        self.lengths   = []
         with open(annotations_file) as f:
             for line in f.readlines():
                 data = json.loads(line)
@@ -37,6 +37,12 @@ class AgentDataset(Dataset):
                 )
                 self.input_ids.append(input_ids)
                 self.lengths.append(len(input_ids))
+                answers_ids = tokenizer(
+                    [json.dumps(data.get("answer", []))],
+                    padding=True,
+                    padding_side='left',
+                )
+                self.answers.append(answers_ids['input_ids'][0])
     
     def __len__(self):
         return len(self.ids)
@@ -44,7 +50,7 @@ class AgentDataset(Dataset):
     def __getitem__(self, idx):
         return {
             "input_ids": self.input_ids[idx],
-            "lengths": self.lengths[idx],
+            "answers": self.answers[idx],
         }
     
     def __repr__(self):
@@ -91,12 +97,36 @@ class ValueModelDataset:
         return "ValueModelDataset(\n    features: {},\n    length: {}\n)".format(json.dumps(list(self[0].keys())), len(self))
 
 
+class AgentDataCollatorWithPadding(DataCollatorWithPadding):
+    def __call__(self, features):
+        batch_input_ids = super().__call__([{"input_ids": feature["input_ids"]} for feature in features])
+        batch_answers = super().__call__([{"input_ids": feature["answers"]} for feature in features])
+        batch_input_ids["answers"] = batch_answers["input_ids"]
+        del batch_input_ids["attention_mask"]
+        return batch_input_ids
+
 if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(
         "/mnt/bn/videonasi18n/heyc/ckpts/Qwen2.5-7B-Instruct",
         padding_side="left",
     )
-    # train_dataset = AgentDataset("/mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/train_ppo.jsonl", tokenizer)
-    train_dataset = ValueModelDataset("/mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/train_vm.jsonl", tokenizer)
+    train_dataset = AgentDataset("/mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/train_ppo.jsonl", tokenizer)
+    # train_dataset = ValueModelDataset("/mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/train_vm.jsonl", tokenizer)
     print(train_dataset)
     print(train_dataset[0])
+
+    from torch.utils.data import DataLoader
+    dataloader = DataLoader(
+        train_dataset,
+        batch_size=4,
+        shuffle=True,
+        collate_fn=AgentDataCollatorWithPadding(tokenizer),
+        drop_last=True
+    )
+    
+    def repeat_generator():
+        while True:
+            yield from dataloader
+
+    iter_dataloader = iter(repeat_generator())
+    print(next(iter_dataloader))

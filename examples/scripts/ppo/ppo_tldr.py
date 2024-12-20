@@ -55,11 +55,11 @@ nohup accelerate launch \
     examples/scripts/ppo/ppo_tldr.py \
     --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/train_ppo.jsonl \
     --dataset_test_split validation \
-    --output_dir /mnt/hdfs/foundation/agent/heyc/ppo/t4 \
+    --output_dir /mnt/hdfs/foundation/agent/heyc/ppo/t20 \
     --learning_rate 3e-6 \
     --per_device_train_batch_size 2 \
     --gradient_accumulation_steps 4 \
-    --total_episodes 128000 \
+    --total_episodes 32000 \
     --paper_db /mnt/hdfs/foundation/agent/heyc/cs_paper_2nd.zip \
     --model_name_or_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
     --sft_model_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
@@ -69,17 +69,19 @@ nohup accelerate launch \
     --attn_implementation "flash_attention_2" \
     --response_length 1024 \
     --stop_token eos \
-    --alpha 1.0 \
-    --save_steps 50 \
+    --alpha 0.1 \
+    --save_steps 25 \
     --rounds 2 \
     --use_vm True \
-    --vf_coef 0.2 \
-    --expand_select_score 0.5 \
-    --kl_coef 0.02 > nohup3.out 2>&1 &
+    --vf_coef 10.0 \
+    --expand_select_score 0.8 \
+    --expand_cost 0.1 \
+    --warm_up_step 100 \
+    --kl_coef 0.05 > nohup5.out 2>&1 &
 """
 
 import wandb
-
+wandb.login(key="214125030792bd6cfd84015505ed93487f714a59")
 import os
 if int(os.environ.get('LOCAL_RANK', 0)) == 0:
     wandb.init(
@@ -345,4 +347,69 @@ ModelConfig(
     bnb_4bit_quant_type='nf4',
     use_bnb_nested_quant=False
 )
+
+# multi-gpu training for 7b
+nohup accelerate launch \
+    --config_file examples/accelerate_configs/deepspeed_zero3_multi.yaml \
+    --main_process_port 2502 \
+    --machine_rank 0 \
+    --main_process_ip 10.124.174.69 \
+    examples/scripts/ppo/ppo_tldr.py \
+    --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/train_ppo.jsonl \
+    --dataset_test_split validation \
+    --output_dir /mnt/hdfs/foundation/agent/heyc/ppo/t18 \
+    --learning_rate 1e-6 \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 4 \
+    --total_episodes 32000 \
+    --paper_db /mnt/hdfs/foundation/agent/heyc/cs_paper_2nd.zip \
+    --model_name_or_path /mnt/hdfs/foundation/agent/heyc/sft2/checkpoint-1250 \
+    --sft_model_path /mnt/hdfs/foundation/agent/heyc/sft2/checkpoint-1250 \
+    --reward_model_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
+    --local_rollout_forward_batch_size 4 \
+    --num_sample_generations 0 \
+    --attn_implementation "flash_attention_2" \
+    --response_length 1024 \
+    --stop_token eos \
+    --alpha 0.1 \
+    --save_steps 10 \
+    --rounds 2 \
+    --use_vm True \
+    --vf_coef 10.0 \
+    --expand_select_score 0.8 \
+    --expand_cost 0.1 \
+    --num_ppo_epochs 2 \
+    --kl_coef 0.05 > nohup3.out 2>&1 &
+
+nohup accelerate launch \
+    --config_file examples/accelerate_configs/deepspeed_zero3_multi.yaml \
+    --main_process_port 2502 \
+    --machine_rank 1 \
+    --main_process_ip 10.124.174.69 \
+    examples/scripts/ppo/ppo_tldr.py \
+    --dataset_name /mnt/bn/videonasi18n/heyc/paper_agent_demo/data/train_agent/train_ppo.jsonl \
+    --dataset_test_split validation \
+    --output_dir /mnt/hdfs/foundation/agent/heyc/ppo/t18 \
+    --learning_rate 1e-6 \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 4 \
+    --total_episodes 32000 \
+    --paper_db /mnt/hdfs/foundation/agent/heyc/cs_paper_2nd.zip \
+    --model_name_or_path /mnt/hdfs/foundation/agent/heyc/sft2/checkpoint-1250 \
+    --sft_model_path /mnt/hdfs/foundation/agent/heyc/sft2/checkpoint-1250 \
+    --reward_model_path /mnt/hdfs/foundation/agent/heyc/sft/checkpoint-640 \
+    --local_rollout_forward_batch_size 4 \
+    --num_sample_generations 0 \
+    --attn_implementation "flash_attention_2" \
+    --response_length 1024 \
+    --stop_token eos \
+    --alpha 0.1 \
+    --save_steps 10 \
+    --rounds 2 \
+    --use_vm True \
+    --vf_coef 10.0 \
+    --expand_select_score 0.8 \
+    --expand_cost 0.1 \
+    --num_ppo_epochs 2 \
+    --kl_coef 0.05 > nohup4.out 2>&1 &
 """

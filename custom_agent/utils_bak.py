@@ -127,10 +127,8 @@ def response_handler(
         args, 
         paper_db,
         typ="search", 
-        f_paper=None,
-        answer=[]
+        f_paper=None
     ): 
-    # log("answer", answer)
     scores, has_stop = [], False
     if typ == "search":
         user_query_template = search_user_query_template
@@ -178,39 +176,19 @@ def response_handler(
                     searched_papers = get_expand_papers(query_keys[idx], f_paper, paper_db)
 
             if len(searched_papers) > 0:
-                results = []
+                # get selector score
                 for searched_paper in searched_papers:
-                    if keep_letters(searched_paper["title"]) in answer:
-                        results.append({"prob": 1})
-                    else:
-                        results.append({"prob": 0})
-
-                if args.use_selector:
-                    # get selector score
-                    for searched_paper in searched_papers:
-                        select_prompts.append(select_prompt.format(title=searched_paper["title"], abstract=searched_paper["abstract"], user_query=user_query))
-                    for _ in range(3): # The selector service may be unstable, maximum of 3 repeated calls
-                        try:
-                            """
-                            Deploy an additional selector to get the relevant possibilities of paper and user_query.
-                            Implement a function `call_selector` that takes the prompts of the selector as input and returns the probability scores.
-                            def call_selector(select_prompts: List[str]) -> List[Dict(str, any)]:
-                                return [{"prob": 0} for i in range(len(select_prompts))]
-                            """
-                            selector_results = laplace.matx_inference("select_agent", {"text": select_prompts})
-                            selector_results = [json.loads(x.decode()) for x in selector_results.output_bytes_lists['output']]
-                            break
-                        except Exception as e:
-                            print(e)
-                            selector_results = [{"prob": 0} for i in range(len(select_prompts))]
-                    for i in range(len(results)):
-                        if i < len(selector_results) and selector_results[i]["prob"] > results[i]["prob"]:
-                            results[i]["prob"] = selector_results[i]["prob"]
-                    results = selector_results
-
+                    select_prompts.append(select_prompt.format(title=searched_paper["title"], abstract=searched_paper["abstract"], user_query=user_query))
+                for _ in range(3):
+                    try:
+                        results = laplace.matx_inference("select_agent", {"text": select_prompts})
+                        results = [json.loads(x.decode()) for x in results.output_bytes_lists['output']]
+                        break
+                    except:
+                        results = [{"prob": 0} for i in range(len(select_prompts))]
+                
                 # gen value model prompt
                 all_prompts = []
-                # log(searched_papers, results)
                 for searched_paper, result in zip(searched_papers, results):
                     if keep_letters(searched_paper["title"]) not in searched_paper_set:
                         searched_paper_set.add(keep_letters(searched_paper["title"]))
@@ -228,7 +206,7 @@ def response_handler(
                 for i in all_prompts[:MAX_PAPERS]:
                     value_model_prompts.append(i[2])
                     with lock:
-                        all_papers.append([i[0], i[1], i[2][:1], answer])
+                        all_papers.append([i[0], i[1], i[2][:1]])
                 
             # get value model score
             if args.use_vm:
@@ -262,7 +240,7 @@ def response_handler(
     with lock:
         all_scores[num] = score_tensor
 
-def rollout(query_responses, tokenizer, context_length, value_model, args, paper_db, answers, papers=None, typ="search", return_new_query=True):
+def rollout(query_responses, tokenizer, context_length, value_model, args, paper_db, papers=None, typ="search", return_new_query=True):
     
     # decode to strs
     query_response_strs = tokenizer.batch_decode(query_responses, skip_special_tokens=True)
@@ -291,8 +269,7 @@ def rollout(query_responses, tokenizer, context_length, value_model, args, paper
                 args, 
                 paper_db,
                 typ, 
-                f_paper,
-                [keep_letters(answer) for answer in answers[num]]
+                f_paper
             )
         )
         threads.append(thread)
@@ -317,8 +294,9 @@ def rollout(query_responses, tokenizer, context_length, value_model, args, paper
         # hard-coded to return 6 items
         all_papers.sort(key=lambda x: x[0], reverse=True)
         next_data = []
+        # all_papers_num = len(all_papers)
         if len(all_papers) == 0:
-            return None, None, all_scores, []
+            return None, None, all_scores
         while len(all_papers) < 6:
             all_papers += all_papers
         next_data = all_papers[:6]
@@ -337,7 +315,7 @@ def rollout(query_responses, tokenizer, context_length, value_model, args, paper
             )
             input_ids = torch.tensor(input_ids, device=query_responses.device)
 
-        return input_ids, [i[1] for i in next_data], all_scores, [i[3] for i in next_data]
+        return input_ids, [i[1] for i in next_data], all_scores
     else:
-        return None, None, all_scores, []
+        return None, None, all_scores
     
